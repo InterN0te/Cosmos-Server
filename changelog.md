@@ -1,9 +1,22 @@
 ## Version 0.18.0
+ - UI to backup and restore containers/folders/volumes using Restic
+ - Implements sudo mode - your normal token last longer, but you need to "sudo" to do admin tasks
+ - Re-Implements the SSO using openID internally - fixes issue where you need to re-loging when app are on different domains (because of browser cookies limitations)
  - Implements local HTTPS Certificate Authority, to locally trust self-signed certificates on devices
+ - Added new folder button to file picker
+ - Cosmos now waits for CRON jobs to be over before restarting the server
+ - Fixed bug with RClone storage duplication in the UI
  - Implements hybrid HTTPS with public and self-signed certificates switched on the fly
+ - OpenID now returns more info in case of errors when Cosmos is in debug mode
  - Localizations improvements (Thanks @madejackson)
  - Improved local IP detection (Thanks @r41d)
  - Updated LEGO to 4.21.0
+ - Fixed file picker prefix issue in docker container
+ - Added OpenID IDTokenSigningAlgValuesSupported
+ - Fix RClone not starting (hopefully)
+ - Added traditional Chinese translation
+ - Avahi now ignores virtual interfaces
+ - Fixed bug preventing the local mDNS broadcaster from publishing over 17 entries
 
 ## Version 0.17.7
  - Fix error code on login screen

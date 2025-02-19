@@ -13,6 +13,7 @@ import (
 		"github.com/azukaar/cosmos-server/src/metrics"
 		"github.com/azukaar/cosmos-server/src/cron"
 		"github.com/azukaar/cosmos-server/src/storage"
+		"github.com/azukaar/cosmos-server/src/backups"
 		"github.com/gorilla/mux"
 		"strconv"
 		"time"
@@ -59,24 +60,17 @@ func startHTTPServer(router *mux.Router) error {
 	return HTTPServer.ListenAndServe()
 }
 
+var primaryCert *tls.Certificate
+var secondaryCert *tls.Certificate
+
 // GetCertificate returns the appropriate certificate based on the client hello info
 func GetCertificate(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	config := utils.GetMainConfig()
 	
 	if config.HTTPConfig.HTTPSCertificateMode == "PROVIDED" {
-			// If not in LETSENCRYPT mode, just return the main certificate
-			cert, err := tls.X509KeyPair([]byte(config.HTTPConfig.TLSCert), []byte(config.HTTPConfig.TLSKey))
-			if err != nil {
-					return nil, err
-			}
-			return &cert, nil
+			return primaryCert, nil
 	} else if config.HTTPConfig.HTTPSCertificateMode == "SELFSIGNED" {
-		// If not in LETSENCRYPT mode, just return the main certificate
-		cert, err := tls.X509KeyPair([]byte(config.HTTPConfig.SelfTLSCert), []byte(config.HTTPConfig.SelfTLSKey))
-		if err != nil {
-				return nil, err
-		}
-		return &cert, nil
+		return secondaryCert, nil
 	}
 
 	host := clientHello.ServerName
@@ -111,25 +105,10 @@ func GetCertificate(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) 
 
 	if shouldUseSelfSigned {
 			utils.Debug("Using self-signed certificate for: " + host)
-			cert, err := tls.X509KeyPair([]byte(config.HTTPConfig.SelfTLSCert), []byte(config.HTTPConfig.SelfTLSKey))
-			if err != nil {
-					utils.Error("Error loading self-signed certificate, falling back to main cert: ", err)
-					// Fallback to main certificate
-					cert, err := tls.X509KeyPair([]byte(config.HTTPConfig.TLSCert), []byte(config.HTTPConfig.TLSKey))
-					if err != nil {
-							return nil, err
-					}
-					return &cert, nil
-			}
-			return &cert, nil
+			return secondaryCert, nil
 	}
 
-	// Use main certificate for all other cases
-	cert, err := tls.X509KeyPair([]byte(config.HTTPConfig.TLSCert), []byte(config.HTTPConfig.TLSKey))
-	if err != nil {
-			return nil, err
-	}
-	return &cert, nil
+	return primaryCert, nil
 }
 
 func startHTTPSServer(router *mux.Router) error {
@@ -204,6 +183,23 @@ func startHTTPSServer(router *mux.Router) error {
 
 	tlsConf.Certificates = []tls.Certificate{cert}
 
+	_primaryCert, errCert := tls.X509KeyPair(([]byte)(HTTPConfig.TLSCert), ([]byte)(HTTPConfig.TLSKey))
+	if errCert != nil {
+		config.HTTPConfig.ForceHTTPSCertificateRenewal = true
+		utils.SetBaseMainConfig(config)
+		utils.Fatal("Getting Certificate pair", errCert)
+	}
+
+	_secondaryCert, errCert := tls.X509KeyPair(([]byte)(HTTPConfig.SelfTLSCert), ([]byte)(HTTPConfig.SelfTLSKey))
+	if errCert != nil {
+		config.HTTPConfig.ForceHTTPSCertificateRenewal = true
+		utils.SetBaseMainConfig(config)
+		utils.Fatal("Getting Certificate pair", errCert)
+	}
+
+	primaryCert = &_primaryCert
+	secondaryCert = &_secondaryCert
+
 	HTTPServer = &http.Server{
     TLSConfig: &tls.Config{
 			GetCertificate: GetCertificate,
@@ -239,16 +235,18 @@ func tokenMiddleware(next http.Handler) http.Handler {
 		//Header.Del
 		r.Header.Del("x-cosmos-user")
 		r.Header.Del("x-cosmos-role")
+		r.Header.Del("x-cosmos-user-role")
 		r.Header.Del("x-cosmos-mfa")
 
-		u, err := user.RefreshUserToken(w, r)
+		role, u, err := user.RefreshUserToken(w, r)
 
 		if err != nil {
 			return
 		}
 
 		r.Header.Set("x-cosmos-user", u.Nickname)
-		r.Header.Set("x-cosmos-role", strconv.Itoa((int)(u.Role)))
+		r.Header.Set("x-cosmos-role", strconv.Itoa((int)(role)))
+		r.Header.Set("x-cosmos-user-role", strconv.Itoa((int)(u.Role)))
 		r.Header.Set("x-cosmos-mfa", strconv.Itoa((int)(u.MFAState)))
 
 		next.ServeHTTP(w, r)
@@ -458,12 +456,10 @@ func InitServer() *mux.Router {
 	srapi.Use(utils.ContentTypeMiddleware("application/json"))
 	
 	srapi.HandleFunc("/api/login", user.UserLogin)
+	srapi.HandleFunc("/api/sudo", user.UserSudo)
 	srapi.HandleFunc("/api/password-reset", user.ResetPassword)
 	srapi.HandleFunc("/api/mfa", user.API2FA)
 	srapi.HandleFunc("/api/status", StatusRoute)
-	srapi.HandleFunc("/api/restart-server", restartHostMachineRoute)
-	srapi.HandleFunc("/_logs", LogsRoute)
-	srapi.HandleFunc("/api/force-server-update", ForceUpdateRoute)
 	srapi.HandleFunc("/api/can-send-email", CanSendEmail)
 	srapi.HandleFunc("/api/newInstall", NewInstallRoute)
 	srapi.HandleFunc("/api/logout", user.UserLogout)
@@ -473,12 +469,15 @@ func InitServer() *mux.Router {
 	srapi.HandleFunc("/api/favicon", GetFavicon)
 	srapi.HandleFunc("/api/ping", PingURL)
 	srapi.HandleFunc("/api/me", user.Me)
-	// srapi.HandleFunc("/api/terminal", HostTerminalRoute)
+
 	srapi.HandleFunc("/api/terminal/{route}", HostTerminalRoute)
 	
 	srapiAdmin := router.PathPrefix("/cosmos").Subrouter()
 	srapiAdmin.Use(utils.ContentTypeMiddleware("application/json"))
 
+	srapiAdmin.HandleFunc("/api/restart-server", restartHostMachineRoute)
+	srapiAdmin.HandleFunc("/_logs", LogsRoute)
+	srapiAdmin.HandleFunc("/api/force-server-update", ForceUpdateRoute)
 	srapiAdmin.HandleFunc("/api/config", configapi.ConfigRoute)
 	srapiAdmin.HandleFunc("/api/_memory", MemStatusRoute)
 	srapiAdmin.HandleFunc("/api/restart", configapi.ConfigApiRestart)
@@ -548,6 +547,7 @@ func InitServer() *mux.Router {
 	srapiAdmin.HandleFunc("/api/jobs/run", cron.RunJobRoute)
 	srapiAdmin.HandleFunc("/api/jobs/get", cron.GetJobRoute)
 	srapiAdmin.HandleFunc("/api/jobs/delete", cron.DeleteJobRoute)
+	srapiAdmin.HandleFunc("/api/jobs/running", cron.GetRunningJobsRoute)
 
 	srapiAdmin.HandleFunc("/api/smart-def", storage.ListSmartDef)
 	srapiAdmin.HandleFunc("/api/disks", storage.ListDisksRoute)
@@ -561,7 +561,19 @@ func InitServer() *mux.Router {
 	srapiAdmin.HandleFunc("/api/snapraid/{name}/{action}", storage.SnapRAIDRunRoute)
 	srapiAdmin.HandleFunc("/api/rclone-restart", storage.API_Rclone_remountAll)
 	srapiAdmin.HandleFunc("/api/list-dir", storage.ListDirectoryRoute)
-	
+	srapiAdmin.HandleFunc("/api/new-dir", storage.CreateFolderRoute)
+
+	srapiAdmin.HandleFunc("/api/backups-repository", backups.ListRepos)
+	srapiAdmin.HandleFunc("/api/backups-repository/{name}/snapshots", backups.ListSnapshotsRouteFromRepo)
+	srapiAdmin.HandleFunc("/api/backups/{name}/snapshots", backups.ListSnapshotsRoute)
+	srapiAdmin.HandleFunc("/api/backups/{name}/{snapshot}/folders", backups.ListFoldersRoute) 
+	srapiAdmin.HandleFunc("/api/backups/{name}/restore", backups.RestoreBackupRoute)
+	srapiAdmin.HandleFunc("/api/backups", backups.AddBackupRoute)
+	srapiAdmin.HandleFunc("/api/backups/edit", backups.EditBackupRoute)
+	srapiAdmin.HandleFunc("/api/backups/{name}", backups.RemoveBackupRoute)
+	srapiAdmin.HandleFunc("/api/backups/{name}/{snapshot}/forget", backups.ForgetSnapshotRoute)
+	srapiAdmin.HandleFunc("/api/backups/{name}/{snapshot}/subfolder-restore-size", backups.StatsRepositorySubfolderRoute)
+
 	// srapiAdmin.HandleFunc("/api/storage/raid", storage.RaidListRoute).Methods("GET")
 	// srapiAdmin.HandleFunc("/api/storage/raid", storage.RaidCreateRoute).Methods("POST")
 	// srapiAdmin.HandleFunc("/api/storage/raid/{name}", storage.RaidDeleteRoute).Methods("DELETE")
@@ -617,8 +629,22 @@ func InitServer() *mux.Router {
 		uirouter.Use(utils.EnsureHostname)
 	}
 
+	OpenIDDetect := router.PathPrefix("/").Subrouter()
+	SecureAPI(OpenIDDetect, true, true)
+	authorizationserver.RegisterHandlersDetect(OpenIDDetect, srapi)
 
 	router = proxy.BuildFromConfig(router, HTTPConfig.ProxyConfig)
+
+	wellKnownRouter := router.PathPrefix("/").Subrouter()
+	SecureAPI(wellKnownRouter, true, true)
+
+	userRouter := router.PathPrefix("/oauth2").Subrouter()
+	SecureAPI(userRouter, false, true)
+
+	serverRouter := router.PathPrefix("/oauth2").Subrouter()
+	SecureAPI(serverRouter, true, true)
+
+	authorizationserver.RegisterHandlers(wellKnownRouter, userRouter, serverRouter)
 	
 	router.HandleFunc("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
     http.Redirect(w, r, "/cosmos-ui/", http.StatusTemporaryRedirect)
@@ -627,17 +653,6 @@ func InitServer() *mux.Router {
 	router.HandleFunc("/cosmos-ui", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
     http.Redirect(w, r, "/cosmos-ui/", http.StatusTemporaryRedirect)
 	}))
-
-	userRouter := router.PathPrefix("/oauth2").Subrouter()
-	SecureAPI(userRouter, false, true)
-
-	serverRouter := router.PathPrefix("/oauth2").Subrouter()
-	SecureAPI(serverRouter, true, true)
-
-	wellKnownRouter := router.PathPrefix("/").Subrouter()
-	SecureAPI(wellKnownRouter, true, true)
-
-	authorizationserver.RegisterHandlers(wellKnownRouter, userRouter, serverRouter)
 
 	return router
 }

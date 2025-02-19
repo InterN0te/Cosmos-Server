@@ -12,6 +12,7 @@ type ProxyMode string
 type LoggingLevel string
 
 const (
+	NOONE 			 = -1
 	GUEST 			 = 0
 	USER         = 1
 	ADMIN        = 2
@@ -99,6 +100,7 @@ type Config struct {
 	MonitoringDisabled bool
 	MonitoringAlerts map[string]Alert
 	BackupOutputDir string
+	IncrBackupOutputDir string
 	DisableHostModeWarning bool
 	AdminWhitelistIPs []string
 	AdminConstellationOnly bool
@@ -107,6 +109,8 @@ type Config struct {
 	Licence string
 	ServerToken string
 	RemoteStorage RemoteStorageConfig
+	DisableOpenIDDirect bool
+	Backup BackupConfig
 }
 
 
@@ -434,4 +438,20 @@ type LocationRemoteStorageConfig struct {
 
 type RemoteStorageConfig struct {
 	Shares []LocationRemoteStorageConfig
+}
+
+type BackupConfig struct {
+	Disable bool
+	Backups map[string]SingleBackupConfig
+}
+
+type SingleBackupConfig struct {
+	Name string
+	Repository string
+	Password string
+	Source string 
+	Crontab string
+	CrontabForget string
+	RetentionPolicy string
+	AutoStopContainers bool
 }

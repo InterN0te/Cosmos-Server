@@ -84,7 +84,11 @@ func UserLogin(w http.ResponseWriter, req *http.Request) {
 				}
 			}
 
-			SendUserToken(w, req, user, false)
+			role := user.Role
+			if role >= utils.ADMIN {
+				role = utils.USER
+			}
+			SendUserToken(w, req, user, false, role)
 
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"status": "OK",

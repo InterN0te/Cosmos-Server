@@ -15,6 +15,7 @@ import { FolderOpenOutlined, ClockCircleOutlined, DashboardOutlined, DeleteOutli
 import * as API from '../api';
 import { current } from '@reduxjs/toolkit';
 import { json } from 'react-router';
+import { NewFolderButton } from './newFileModal';
 
 function transformToTree(data) {
   const root = {
@@ -57,7 +58,7 @@ function transformToTree(data) {
   return root;
 }
 
-const FilePickerModal = ({ raw, open, cb, OnClose, onPick, _storage = '', _path = '', select='any' }) => {
+const FilePickerModal = ({ raw, open, cb, restic, OnClose, onPick, canCreate, _storage = '', _path = '', select='any' }) => {
   const { t } = useTranslation();
   const [selectedStorage, setSelectedStorage] = React.useState(_storage);
   const [selectedPath, setSelectedPath] = React.useState(_path);
@@ -68,11 +69,11 @@ const FilePickerModal = ({ raw, open, cb, OnClose, onPick, _storage = '', _path 
 
   let explore = !onPick;
 
-  const updateFiles = (storage, path) => {
+  const updateFiles = (storage, path, force) => {
     let resetStorage = storage != selectedStorage;
 
     // if already loaded, just update the tree
-    if(files[path]) {
+    if(!resetStorage && (!force && files[path])) {
       setSelectedStorage(storage);
       setSelectedPath(path);
       return;
@@ -94,6 +95,7 @@ const FilePickerModal = ({ raw, open, cb, OnClose, onPick, _storage = '', _path 
         setStorages(data.storages);
         setSelectedStorage(data.storage);
         setSelectedPath(data.path);
+        setPath(data.storage, data.path || '/', data.fullpath || '/');
       });
     }
   }
@@ -132,9 +134,20 @@ const FilePickerModal = ({ raw, open, cb, OnClose, onPick, _storage = '', _path 
     );
   }
 
+  const setPath = (selectedStorage, p, fullPath) => {
+    if(raw) {
+      let realSelected = restic ? ((selectedStorage == "local" || selectedStorage == "") ? selectedStorage : ("rclone" + ':' + selectedStorage)) : selectedStorage;
+      let realNodePath = restic && selectedStorage != "local" ? p.replace(/^\//, '') : p;
+      setSelectedFullPath(selectedStorage == "local" ? p : (realSelected + ':' + realNodePath));
+    } else {
+      setSelectedFullPath(fullPath);
+    }
+  }
+
   const handleToggleNode = (event, nodePath) => {
     if (nodePath == "/") {
       updateFiles(selectedStorage, nodePath);
+      setPath(selectedStorage, nodePath, nodePath);
       return;
     }
 
@@ -157,11 +170,7 @@ const FilePickerModal = ({ raw, open, cb, OnClose, onPick, _storage = '', _path 
         (select == 'file' && !file.isDir) ||
         (select == 'folder' && file.isDir)
       )) {
-        if(raw) {
-          setSelectedFullPath(selectedStorage == "local" ? nodePath : (selectedStorage + ':' + nodePath));
-        } else {
-          setSelectedFullPath(file.fullPath);
-        }
+        setPath(selectedStorage, nodePath, file.fullPath);
       }
     }
   }
@@ -187,20 +196,30 @@ const FilePickerModal = ({ raw, open, cb, OnClose, onPick, _storage = '', _path 
                       {storages.map((storage) => (
                         <ListItem key={storage.name} disablePadding >
                            <ListItemButton
-                            onClick={() => updateFiles(storage.name, '')}
+                            onClick={() => {updateFiles(storage.name, '');}}
                             style={{background: selectedStorage === storage.name ? 'rgba(0,0,0,0.1)' : 'transparent' }}
                             >{storage.name}</ListItemButton>
                         </ListItem>
                       ))}
                     </List>
                     <Stack alignItems="center" spacing={2}>
-                      <Button href="/cosmos-ui/config-url" target="_blank" style={{width: '110px', textAlign:'center'}}>Add external storages</Button>
+                      <Button href="/cosmos-ui/storage" target="_blank" style={{width: '110px', textAlign:'center'}}>Add external storages</Button>
                     </Stack>
                     </Stack>
                 </div>}
                 <div style={{flexGrow: 1, minHeight: '300px'}}>
-                {!explore && <div style={{padding: '5px 5px 5px 10px', margin: '0px 0px 5px 0px', background: 'rgba(0,0,0,0.1)'}}
-                   >{t('mgmt.storage.selected')}: {selectedFullPath}</div>}
+                  {!explore && <Stack style={{padding: '5px 5px 5px 10px', margin: '0px 0px 5px 0px', background: 'rgba(0,0,0,0.1)'}} direction="row" spacing={2} alignContent={'center'} alignItems={'center'}>
+                    <div>{canCreate ?  <NewFolderButton cb={
+                      (fullpath, filename) => {
+                        updateFiles(selectedStorage, selectedPath, true);
+                        setTimeout(() => {
+                          setPath(selectedStorage, selectedPath + "/" + filename, fullpath);
+                          setSelectedPath(selectedPath + "/" + filename);
+                        }, 1000);
+                      }
+                    } storage={selectedStorage} path={selectedPath}/> : null}</div>
+                    <div>{t('mgmt.storage.selected')}: {selectedFullPath}</div>
+                  </Stack>}
                   {convertToTreeView(directoriesAsTree)}
                 </div>
               </Stack>
@@ -231,15 +250,15 @@ const FilePickerModal = ({ raw, open, cb, OnClose, onPick, _storage = '', _path 
   );
 };
 
-const FilePickerButton = ({ raw, onPick, size = '100%', storage = '', path = '', select="any" }) => {
+const FilePickerButton = ({ disabled, raw, canCreate, restic, onPick, size = '100%', storage = '', path = '', select="any" }) => {
   const [open, setOpen] = React.useState(false);
 
   return (
     <>
-      <IconButton onClick={() => setOpen(true)}>
+      <IconButton onClick={() => setOpen(true)} disabled={disabled}>
         {onPick ? <><FolderAddFilled style={{fontSize: size}}/></> : <FolderViewOutlined style={{fontSize: size}}/>}
       </IconButton>
-      {open && <FilePickerModal raw={raw} select={select} open={open} onPick={onPick} OnClose={() => setOpen(false)} _storage={storage} _path={path} />}
+      {open && <FilePickerModal canCreate={canCreate} restic={restic} raw={raw} select={select} open={open} onPick={onPick} OnClose={() => setOpen(false)} _storage={storage} _path={path} />}
     </>
   );
 }

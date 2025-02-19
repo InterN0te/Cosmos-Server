@@ -161,7 +161,7 @@ func startRCloneProcess(args ...string) {
 	configLocation := utils.CONFIGFOLDER + "rclone.conf"
 
 	if len(args) == 0 {
-		rcloneCmd, _, _, _ := RunRCloneCommand([]string{"rcd", "--rc-user=" + utils.ProxyRCloneUser, "--rc-pass=" + utils.ProxyRClonePwd, "--config=" + configLocation, "--rc-baseurl=/cosmos/rclone"})
+		rcloneCmd, _, _, _ := RunRCloneCommand([]string{"rcd", "--rc-addr", "localhost:5573", "--rc-user=" + utils.ProxyRCloneUser, "--rc-pass=" + utils.ProxyRClonePwd, "--config=" + configLocation, "--rc-baseurl=/cosmos/rclone"})
 		rcloneProcesses[rcloneCmd.Process.Pid] = &RCloneProcess{
 			RcloneCmd: rcloneCmd,
 			Main: true,
@@ -275,7 +275,7 @@ func Restart() {
 
 			time.Sleep(2 * time.Second)
 			if retries > 5 {
-				utils.MajorError("[RemoteStorage] Failed to reach RClone, check the port 5572 is free", nil)
+				utils.MajorError("[RemoteStorage] Failed to reach RClone, check the port 5573 is free", nil)
 				return
 			}
 			retries++
@@ -288,7 +288,7 @@ func Restart() {
 }
 
 func runRDC(path string, params ...string) ([]byte, error) {
-	baseURL := "http://localhost:5572/cosmos/rclone"
+	baseURL := "http://localhost:5573/cosmos/rclone"
 	fullURL := fmt.Sprintf("%s%s", baseURL, path)
 
 	utils.Debug("[RemoteStorage] Sending request to RClone server: " + fullURL)
@@ -460,6 +460,7 @@ func getStorageList() ([]RemoteStorage, error) {
 		return nil, fmt.Errorf("error getting config dump: %w", err)
 	}
 
+	CachedRemoteStorageList = []StorageInfo{}
 
 	var result map[string]interface{}
 	if err := json.Unmarshal(response, &result); err != nil {
@@ -621,6 +622,8 @@ type StorageRoutes struct {
 var StorageRoutesList []StorageRoutes
 
 func remountAll() {
+	utils.WaitForAllJobs() 
+	
 	StorageRoutesList = []StorageRoutes{}
 
 	// Mount remote storages
@@ -684,6 +687,8 @@ func API_Rclone_remountAll(w http.ResponseWriter, req *http.Request) {
 }
 
 func InitRemoteStorage() bool {
+	utils.StopAllRCloneProcess = StopAllRCloneProcess
+	
 	configLocation := utils.CONFIGFOLDER + "rclone.conf"
 	utils.ProxyRCloneUser = utils.GenerateRandomString(8)
 	utils.ProxyRClonePwd = utils.GenerateRandomString(16)
@@ -718,7 +723,7 @@ func InitRemoteStorage() bool {
 
 			time.Sleep(2 * time.Second)
 			if retries > 5 {
-				utils.MajorError("[RemoteStorage] Failed to reach RClone, check the port 5572 is free", nil)
+				utils.MajorError("[RemoteStorage] Failed to reach RClone, check the port 5573 is free", nil)
 				return
 			}
 			retries++

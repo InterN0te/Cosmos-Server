@@ -17,9 +17,13 @@ import (
 	"errors"
 	"path/filepath"
 	"os/exec"
-
+	"encoding/hex"
+	"crypto/sha256"
+	_url "net/url"
 	osnet "net"
-
+	
+	
+	"github.com/ory/fosite"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/disk"
@@ -54,6 +58,8 @@ var RestartHTTPServer = func() {}
 var GetContainerIPByName func(string) (string, error)
 var DoesContainerExist func(string) bool
 var CheckDockerNetworkMode func() string
+var WaitForAllJobs func()
+var StopAllRCloneProcess func(bool)
 
 var ResyncConstellationNodes = func() {}
 
@@ -354,6 +360,13 @@ func SanitizeSafe(s string) string {
 	return strings.TrimSpace(s)
 }
 
+func SanitizeNoSpace(s string) string {
+	s1 := strings.ToLower(strings.TrimSpace(s))
+	s1 = strings.ReplaceAll(s1, " ", "-")
+	s1 = strings.ReplaceAll(s1, "@", "-")
+	return s1
+}
+
 func GetConfigFileName() string {	
 	configFile := os.Getenv("CONFIG_FILE")
 
@@ -418,6 +431,8 @@ func SaveConfigTofile(config Config) {
 
 func RestartServer() {
 	Log("Restarting server...")
+	WaitForAllJobs() 
+	StopAllRCloneProcess(false)
 	os.Exit(0)
 }
 
@@ -955,6 +970,33 @@ func SplitIP(ipPort string) (string, string) {
 	return host, port
 }
 
+func ListInterfaces(skipNebula bool) ([]string, error) {
+	result := []string{}
+
+	// Get a list of all network interfaces.
+	interfaces, err := osnet.Interfaces()
+	if err != nil {
+		return []string{}, err
+	}
+
+	// Iterate over all interfaces.
+	for _, iface := range interfaces {
+		// skip nebula1 interface 
+		if skipNebula && strings.HasPrefix(iface.Name, "nebula") {
+			continue
+		}
+
+		// skip docker interfaces
+		if strings.HasPrefix(iface.Name, "docker") || strings.HasPrefix(iface.Name, "br-") || strings.HasPrefix(iface.Name, "veth") || strings.HasPrefix(iface.Name, "virbr") {
+			continue
+		}
+
+		result = append(result, iface.Name)
+	}
+
+	return result, nil
+}
+
 func ListIps(skipNebula bool) ([]string, error) {
 	// Get a list of all network interfaces.
 	interfaces, err := osnet.Interfaces()
@@ -1027,4 +1069,100 @@ func GetNextAvailableLocalPort(startPort int) (string, error) {
 			}
 	}
 	return "", fmt.Errorf("no available ports")
+}
+
+func GetProxyOIDCredentials(route ProxyRouteConfig, hashSecret bool) *fosite.DefaultClient {
+	// Generate deterministic client ID and secret from route info
+	config := GetMainConfig()
+	HTTPPort := config.HTTPConfig.HTTPPort
+	HTTPSPort := config.HTTPConfig.HTTPSPort
+	h := sha256.New()
+	h.Write([]byte(route.Host))
+	h.Write([]byte(config.HTTPConfig.AuthPrivateKey)) // Use existing key as salt
+	hash := h.Sum(nil)
+	fullhost := route.Host
+
+	// parse host
+	parsedURL, err := _url.Parse("http://" + route.Host)
+	if err == nil {
+			host, port := parsedURL.Hostname(), parsedURL.Port()
+			if port == "" {
+					if IsHTTPS && HTTPSPort != "443" {
+							fullhost = host + ":" + HTTPSPort
+					} else if !IsHTTPS && HTTPPort != "80" {
+							fullhost = host + ":" + HTTPPort
+					}
+			}
+	} else {
+			Error("Error parsing host: " + fullhost, err)
+	}
+
+	clientID := route.Name //SanitizeNoSpace(Route.Name) + "_" + hex.EncodeToString(hash[:8])
+	plainSecret := hex.EncodeToString(hash[8:24])
+
+
+	secret := plainSecret
+	if hashSecret {
+		// Hash the secret with bcrypt
+		hashedSecret, err := bcrypt.GenerateFromPassword([]byte(plainSecret), bcrypt.DefaultCost)
+		if err != nil {
+				Error("Failed to hash client secret", err)
+				// Return with unhashed secret as fallback
+				hashedSecret = []byte(plainSecret)
+		}
+
+		secret = string(hashedSecret)
+	}
+
+	callbackURL := fmt.Sprintf("https://%s/cosmos/oauth2/detect-callback", route.Host)
+	callbackURLClient := fmt.Sprintf("https://%s/oauth2/callback", route.Host)
+
+	redURls := []string{callbackURL, callbackURLClient}
+
+	if IsHTTPS && config.HTTPConfig.AllowHTTPLocalIPAccess {
+		callbackURL2 := fmt.Sprintf("http://%s/cosmos/oauth2/detect-callback", route.Host)
+		redURls = append(redURls, callbackURL2)
+	}
+	
+	return &fosite.DefaultClient{
+			ID:            clientID,
+			Secret: 			 []byte(secret),
+			RedirectURIs:  redURls,
+			Scopes:        []string{"openid", "email", "profile", "offline"},
+			ResponseTypes: []string{"code"},
+			GrantTypes:    []string{"authorization_code"},
+	}
+}
+
+func FindRouteByReqHost(hostname string) (string, *ProxyRouteConfig) {
+	config := GetMainConfig()
+	HTTPPort := config.HTTPConfig.HTTPPort
+	HTTPSPort := config.HTTPConfig.HTTPSPort
+
+	parsedURL, err := _url.Parse("http://" + hostname)
+	
+	if err != nil {
+			Error("Failed to parse URL", err)
+			return hostname, nil
+	}
+	
+	host, port := parsedURL.Hostname(), parsedURL.Port()
+	
+	if port != "" {
+			if IsHTTPS && port == HTTPSPort {
+					hostname = host
+			} else if !IsHTTPS && port == HTTPPort {
+					hostname = host 
+			}
+	}
+	
+	var proxyRoute *ProxyRouteConfig
+	for _, route := range config.HTTPConfig.ProxyConfig.Routes {
+			if route.Host == hostname {
+					proxyRoute = &route
+					break
+			}
+	}
+
+	return hostname, proxyRoute
 }

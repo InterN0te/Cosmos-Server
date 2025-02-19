@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"io/ioutil"
 	"syscall"
+	"strings"
+	"os"
 
 	"github.com/azukaar/cosmos-server/src/utils"
 )
@@ -59,9 +61,6 @@ func ListDirectoryRoute(w http.ResponseWriter, req *http.Request) {
 		var basePath string
 		if storage == "local" {
 			basePath = "/"
-			if utils.IsInsideContainer {
-				basePath = "/mnt/host/"
-			}
 		} else {
 			found := false
 			for _, s := range storages {
@@ -78,7 +77,12 @@ func ListDirectoryRoute(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
-		fullPath := filepath.Join(basePath, path)
+		fullPathRaw := filepath.Join(basePath, path)
+		fullPath := fullPathRaw
+		
+		if utils.IsInsideContainer {
+			fullPath = filepath.Join("/mnt/host/", fullPathRaw)
+		}
 
 		directory, err := ListDirectory(fullPath)
 		if err != nil {
@@ -93,6 +97,7 @@ func ListDirectoryRoute(w http.ResponseWriter, req *http.Request) {
 				"storage":	 storage,
 				"path":    path,
 				"storages":  storages,
+				"fullpath": fullPathRaw,
 				"directory": directory,
 			},
 		})
@@ -132,6 +137,12 @@ func ListDirectory(path string) ([]DirectoryListing, error) {
 			}
 		}
 
+		fullPath := filepath.Join(path, file.Name())
+
+		if utils.IsInsideContainer {
+			fullPath = strings.TrimPrefix(fullPath, "/mnt/host")
+		}
+
 		listing := DirectoryListing{
 			Name:  file.Name(),
 			Ext:   filepath.Ext(file.Name()),
@@ -141,10 +152,88 @@ func ListDirectory(path string) ([]DirectoryListing, error) {
 			Created: file.ModTime().Unix(),
 			UID:   uid,
 			GID:   gid,
-			FullPath: filepath.Join(path, file.Name()),
+			FullPath: fullPath,
 		}
 		listings = append(listings, listing)
 	}
 
 	return listings, nil
+}
+
+func CreateFolderRoute(w http.ResponseWriter, req *http.Request) {
+	if utils.AdminOnly(w, req) != nil {
+		return
+	}
+
+	if req.Method == "POST" {
+		//config := utils.GetMainConfig()
+		storage := req.URL.Query().Get("storage")
+		path := req.URL.Query().Get("path")
+		folder := req.URL.Query().Get("folder")
+
+		if storage == "" {
+		} 
+
+		if path == "" {
+			path = "/"
+		}
+
+		storages, err := ListStorage()
+		if err != nil {
+			utils.Error("CreateFolderRoute: Error listing storages: "+err.Error(), nil)
+			utils.HTTPError(w, "Internal server error", http.StatusInternalServerError, "STO002")
+			return
+		}
+
+		var basePath string
+		if storage == "local" {
+			basePath = "/"
+		} else {
+			found := false
+			for _, s := range storages {
+				if s.Name == storage {
+					basePath = s.Path
+					found = true
+					break
+				}
+			}
+			if !found {
+				utils.Error("CreateFolderRoute: Storage not found: "+storage, nil)
+				utils.HTTPError(w, "Storage not found", http.StatusNotFound, "STO001")
+				return
+			}
+		}
+
+		fullPathRaw := filepath.Join(basePath, path)
+		fullPathRaw = filepath.Join(fullPathRaw, folder)
+		fullPath := fullPathRaw
+		
+		if utils.IsInsideContainer {
+			fullPath = filepath.Join("/mnt/host/", fullPathRaw)
+		}
+
+		utils.Log("CreateFolderRoute: Creating folder: "+fullPath)
+
+		err = os.MkdirAll(fullPath, 0700)
+		if err != nil {
+			utils.Error("CreateFolderRoute: Error listing directory: "+err.Error(), nil)
+			utils.HTTPError(w, "Internal server error", http.StatusInternalServerError, "STO003")
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "OK",
+			"data": map[string]interface{}{
+				"storage":	 storage,
+				"path":    path,
+				"fullpath": fullPathRaw,
+				"storages":  storages,
+				"created":  fullPath,
+			},
+		})
+	} else {
+		utils.Error("CreateFolderRoute: Method not allowed "+req.Method, nil)
+		utils.HTTPError(w, "Method not allowed", http.StatusMethodNotAllowed, "HTTP001")
+		return
+	}
 }

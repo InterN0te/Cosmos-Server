@@ -19,6 +19,7 @@ import (
 	"github.com/azukaar/cosmos-server/src/storage"
 	"github.com/azukaar/cosmos-server/src/cron"
 	"github.com/azukaar/cosmos-server/src/proxy"
+	"github.com/azukaar/cosmos-server/src/backups"
 	
 	"github.com/kardianos/service"
 )
@@ -206,6 +207,9 @@ func cosmos() {
 	} else {
 		utils.Log("Running outside Docker container")
 	}
+
+	i, _ := utils.ListInterfaces(false)
+	utils.Log("Interfaces are: " + strings.Join(i, ", "))
 	
 	if _, err := os.Stat(utils.CONFIGFOLDER); os.IsNotExist(err) {
 		err := os.MkdirAll(utils.CONFIGFOLDER, os.ModePerm)
@@ -293,6 +297,8 @@ func cosmos() {
 		
 		// Has to be done last, so scheduler does not re-init
 		cron.Init()
+
+		go backups.InitBackups()
 
 		utils.Log("Starting server...")
 	}

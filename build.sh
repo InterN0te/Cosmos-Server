@@ -27,11 +27,15 @@ fi
 echo " ---- Build complete, copy assets ----"
 
 cp start.sh build/start.sh
+cp restic-arm restic build/
+
 chmod +x build/start.sh
 chmod +x build/cosmos
 chmod +x build/cosmos-arm64
 chmod +x build/cosmos-launcher
 chmod +x build/cosmos-launcher-arm64
+chmod +x build/restic
+chmod +x build/restic-arm
 
 cp -r static build/
 cp -r GeoLite2-Country.mmdb build/
